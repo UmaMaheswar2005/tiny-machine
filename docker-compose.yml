@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: hydra-qdrant
+    ports:
+      - "6333:6333"
+    volumes:
+      - ./qdrant_storage:/qdrant/storage
+    networks:
+      - hydra-net
+
+  inference:
+    build: ./python-inference
+    container_name: hydra-inference
+    ports:
+      - "8000:8000"
+    networks:
+      - hydra-net
+
+networks:
+  hydra-net:
+    driver: bridge

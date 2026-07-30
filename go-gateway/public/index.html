@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hydra-RAG Engine</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #121212; color: #ffffff; margin: 0; padding: 20px; display: flex; flex-direction: column; height: 100vh; box-sizing: border-box; }
+        #chat-container { flex-grow: 1; overflow-y: auto; padding: 20px; background-color: #1e1e1e; border-radius: 8px; margin-bottom: 20px; border: 1px solid #333; }
+        .message { margin-bottom: 15px; padding: 12px 16px; border-radius: 8px; max-width: 80%; line-height: 1.5; white-space: pre-wrap; }
+        .user-message { background-color: #2b5c8f; margin-left: auto; color: #fff; }
+        .ai-message { background-color: #2d2d2d; margin-right: auto; color: #ddd; border: 1px solid #444; }
+        .input-area { display: flex; gap: 10px; }
+        input[type="text"] { flex-grow: 1; padding: 15px; border-radius: 8px; border: 1px solid #444; background-color: #1e1e1e; color: white; font-size: 16px; }
+        button { padding: 15px 30px; border: none; border-radius: 8px; background-color: #4a90e2; color: white; font-size: 16px; cursor: pointer; font-weight: bold; transition: 0.2s; }
+        button:hover { background-color: #357abd; }
+        .typing { color: #888; font-style: italic; font-size: 14px; margin-bottom: 15px; display: none; }
+    </style>
+</head>
+<body>
+
+    <h2 style="margin-top: 0; color: #4a90e2;">🐉 Hydra-RAG Console</h2>
+    
+    <div id="chat-container">
+        <div class="message ai-message">System online. Engine connected to Llama 3. Local data indexed. What would you like to search?</div>
+    </div>
+    
+    <div class="typing" id="typing-indicator">Hydra is processing local vectors...</div>
+
+    <div class="input-area">
+        <input type="text" id="user-input" placeholder="Ask about your documents..." onkeypress="if(event.key === 'Enter') sendMessage()">
+        <button onclick="sendMessage()">Send</button>
+    </div>
+
+    <script>
+        async function sendMessage() {
+            const input = document.getElementById('user-input');
+            const chat = document.getElementById('chat-container');
+            const typing = document.getElementById('typing-indicator');
+            const query = input.value.trim();
+            
+            if (!query) return;
+
+            // Add User Message
+            chat.innerHTML += `<div class="message user-message">${query}</div>`;
+            input.value = '';
+            chat.scrollTop = chat.scrollHeight;
+            typing.style.display = 'block';
+
+            try {
+                // Call your Go API
+                const response = await fetch('/ask', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ query: query })
+                });
+                
+                const data = await response.json();
+                
+                // Add AI Message
+                typing.style.display = 'none';
+                if (data.answer) {
+                    chat.innerHTML += `<div class="message ai-message">${data.answer}</div>`;
+                } else {
+                    chat.innerHTML += `<div class="message ai-message" style="color: #ff5555;">Error: ${data.error}</div>`;
+                }
+                chat.scrollTop = chat.scrollHeight;
+
+            } catch (err) {
+                typing.style.display = 'none';
+                chat.innerHTML += `<div class="message ai-message" style="color: #ff5555;">Critical Error: Could not reach Go Gateway.</div>`;
+            }
+        }
+    </script>
+</body>
+</html>
