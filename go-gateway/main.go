@@ -10,22 +10,21 @@ import (
 
 	"github.com/go-resty/resty/v2"
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/google/uuid"
 )
 
 type QueryRequest struct {
 	Query     string `json:"query"`
-	SessionID string `json:"session_id"` // Added SessionID field
+	SessionID string `json:"session_id"`
 }
 
-// Thread-safe memory cache for tracking conversation history per session
 type ChatMessage struct {
-	Role    string `json:"role"`    // "user" or "assistant"
+	Role    string `json:"role"` // "user" or "assistant"
 	Content string `json:"content"`
 }
 
 var (
-	// Map session_id -> list of chat messages
 	sessionStore = make(map[string][]ChatMessage)
 	mu           sync.RWMutex
 )
@@ -33,11 +32,20 @@ var (
 func main() {
 	app := fiber.New()
 
+	// 1. FIX: Enable CORS so Vercel Frontend can talk to Render Backend
+	allowedOrigins := os.Getenv("ALLOWED_ORIGINS")
+	if allowedOrigins == "" {
+		allowedOrigins = "*" // Default to allow all during initial setup
+	}
+	app.Use(cors.New(cors.Config{
+		AllowOrigins: allowedOrigins,
+		AllowHeaders: "Origin, Content-Type, Accept, Authorization",
+		AllowMethods: "GET, POST, DELETE, OPTIONS",
+	}))
+
 	app.Static("/", "./public")
 
-	// Local resty client configuration
-	client := resty.New().
-		SetTimeout(60 * time.Second)
+	client := resty.New().SetTimeout(60 * time.Second)
 
 	// --- Raw Vector Search Endpoint ---
 	app.Post("/search", func(c *fiber.Ctx) error {
@@ -52,7 +60,7 @@ func main() {
 		return c.JSON(fiber.Map{"status": "success", "matches": matches})
 	})
 
-	// --- 1. Get All Active Session IDs (For Sidebar List) ---
+	// --- 1. Get All Active Session IDs ---
 	app.Get("/sessions", func(c *fiber.Ctx) error {
 		mu.RLock()
 		defer mu.RUnlock()
@@ -64,7 +72,7 @@ func main() {
 		return c.JSON(fiber.Map{"sessions": sessions})
 	})
 
-	// --- 2. Get Messages for a Specific Session (Load Old Chat) ---
+	// --- 2. Get Messages for a Specific Session ---
 	app.Get("/sessions/:id", func(c *fiber.Ctx) error {
 		sessionID := c.Params("id")
 
@@ -96,27 +104,27 @@ func main() {
 			return c.Status(400).JSON(fiber.Map{"error": "Invalid input"})
 		}
 
-		// Ensure session_id exists (generate UUID if missing)
 		if req.SessionID == "" {
 			req.SessionID = uuid.New().String()
 		}
 
-		// 1. Fetch relevant vector context blocks from Qdrant
+		// 2. FIX: Soft error handling - if vector fetch fails, continue with empty context
+		contextText := ""
 		matches, err := fetchContext(client, req.Query)
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "Context collection failed"})
+			log.Printf("⚠️ Context fetch error (falling back to direct LLM mode): %v", err)
+		} else {
+			for i, match := range matches {
+				payload, _ := match.(map[string]interface{})["payload"].(map[string]interface{})
+				text, _ := payload["text"].(string)
+				source, _ := payload["source"].(string)
+				contextText += fmt.Sprintf("[%d] Source (%s): %s\n\n", i+1, source, text)
+			}
 		}
 
-		contextText := ""
-		for i, match := range matches {
-			payload, _ := match.(map[string]interface{})["payload"].(map[string]interface{})
-			text, _ := payload["text"].(string)
-			source, _ := payload["source"].(string)
-			contextText += fmt.Sprintf("[%d] Source (%s): %s\n\n", i+1, source, text)
-		}
 		log.Println("🔍 DEBUG - Context fetched from Qdrant:")
 		if contextText == "" {
-			log.Println("⚠️ CONTEXT IS EMPTY! Qdrant found nothing.")
+			log.Println("⚠️ CONTEXT IS EMPTY!")
 		} else {
 			log.Println(contextText)
 		}
@@ -137,17 +145,14 @@ func main() {
             - TRIGGER: The user asks about local/internal topic, but [RETRIEVED CONTEXT] is empty or irrelevant.
             - RULE: Briefly state: *"No matching local context found, but here is a breakdown based on general knowledge:"* and provide the answer.`
 
-		// 2. Fetch conversation history for this session (Last 6 turns)
 		mu.RLock()
 		history := sessionStore[req.SessionID]
 		mu.RUnlock()
 
-		// 3. Build OpenAI-compatible messages array with history
 		messagesPayload := []map[string]string{
 			{"role": "system", "content": systemPrompt},
 		}
 
-		// Append last 6 turns from history to the payload
 		start := 0
 		if len(history) > 6 {
 			start = len(history) - 6
@@ -159,25 +164,28 @@ func main() {
 			})
 		}
 
-		// Append the current query + context block as the latest user message
 		userContent := fmt.Sprintf("[RETRIEVED CONTEXT]:\n%s\n\nUSER QUESTION: %s", contextText, req.Query)
 		messagesPayload = append(messagesPayload, map[string]string{
 			"role":    "user",
 			"content": userContent,
 		})
 
-		// 4. Resolve external LLM configuration
-		apiKey := os.Getenv("LLM_API_KEY")
+		// 3. FIX: Check both GROQ_API_KEY and LLM_API_KEY
+		apiKey := os.Getenv("GROQ_API_KEY")
+		if apiKey == "" {
+			apiKey = os.Getenv("LLM_API_KEY")
+		}
+
 		apiURL := os.Getenv("LLM_BASE_URL")
 		if apiURL == "" {
 			apiURL = "https://api.groq.com/openai/v1/chat/completions"
 		}
+
 		modelName := os.Getenv("LLM_MODEL")
 		if modelName == "" {
 			modelName = "llama-3.1-8b-instant"
 		}
 
-		// 5. Send request using OpenAI-compatible chat format
 		resp, err := client.R().
 			SetHeader("Content-Type", "application/json").
 			SetHeader("Authorization", "Bearer "+apiKey).
@@ -193,7 +201,6 @@ func main() {
 			return c.Status(500).JSON(fiber.Map{"error": "External LLM API unreachable"})
 		}
 
-		// 6. Parse OpenAI choices format response
 		var apiRes map[string]interface{}
 		if err := json.Unmarshal(resp.Body(), &apiRes); err != nil {
 			return c.Status(500).JSON(fiber.Map{"error": "Failed to parse intelligence output"})
@@ -210,7 +217,6 @@ func main() {
 			}
 		}
 
-		// 7. Append fresh interaction to session history
 		mu.Lock()
 		sessionStore[req.SessionID] = append(sessionStore[req.SessionID],
 			ChatMessage{Role: "user", Content: req.Query},
@@ -226,12 +232,17 @@ func main() {
 		})
 	})
 
-	log.Println("🏎️ Hydra Gateway with Session Memory running on http://localhost:3000")
-	log.Fatal(app.Listen(":3000"))
+	// 4. FIX: Use dynamic PORT environment variable provided by Render
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "3000"
+	}
+
+	log.Printf("🏎️ Hydra Gateway running on port :%s", port)
+	log.Fatal(app.Listen(":" + port))
 }
 
 func fetchContext(client *resty.Client, query string) ([]interface{}, error) {
-	// Dynamically resolve environment variables for Docker network compatibility
 	inferenceURL := os.Getenv("INFERENCE_URL")
 	if inferenceURL == "" {
 		inferenceURL = "http://localhost:8000"
@@ -241,6 +252,7 @@ func fetchContext(client *resty.Client, query string) ([]interface{}, error) {
 	if qdrantURL == "" {
 		qdrantURL = "http://localhost:6333"
 	}
+	qdrantKey := os.Getenv("QDRANT_API_KEY")
 
 	// 1. Send query to inference service for embedding
 	var aiResponse map[string]interface{}
@@ -258,20 +270,22 @@ func fetchContext(client *resty.Client, query string) ([]interface{}, error) {
 	}
 
 	// 2. Query Qdrant vector database
-	var qdrantResponse map[string]interface{}
-	_, err = client.R().
+	req := client.R().
 		SetBody(map[string]interface{}{
 			"search_params": map[string]interface{}{"hnsw_ef": 128},
 			"vector":        vectors[0],
 			"limit":         5,
 			"with_payload":  true,
-			"filter": map[string]interface{}{
-				"should": []map[string]interface{}{
-					{"key": "keywords", "match": map[string]interface{}{"any": []string{"LSTM-CNN", "YOLO"}}},
-				},
-			},
-		}).
-		SetResult(&qdrantResponse).
+			// 5. FIX: Removed hardcoded YOLO/LSTM keyword filter so search works across ALL context documents
+		})
+
+	// 6. FIX: Attach Qdrant API key header if present (required for Qdrant Cloud)
+	if qdrantKey != "" {
+		req.SetHeader("api-key", qdrantKey)
+	}
+
+	var qdrantResponse map[string]interface{}
+	_, err = req.SetResult(&qdrantResponse).
 		Post(fmt.Sprintf("%s/collections/hydra_docs/points/search", qdrantURL))
 	if err != nil {
 		return nil, fmt.Errorf("Database fetch failed: %v", err)
