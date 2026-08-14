@@ -1,4 +1,50 @@
-/data/
+# =========================
+# Environments
+# =========================
+.env
+.env.*
+*.pem
+credentials.json
+
+# =========================
+# Go
+# =========================
+/bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+# (Note: Do not ignore go.mod or go.sum, Vercel/builders need those)
+
+# =========================
+# Rust
+# =========================
+/target/
+**/*.rs.bk
+
+# =========================
+# Local Database & RAG Data
+# =========================
+# Ignore local Qdrant or vector DB storage volumes
+/qdrant_data/
 /qdrant_storage/
-/repomix-output.xml
-/.DS_Store
+/storage/
+*.db
+*.sqlite
+
+# =========================
+# OS & Editor Files
+# =========================
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# Repomix AI context output
+repomix-output.xml
+
+# Local data / vector dumps
+data/
