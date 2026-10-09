@@ -183,7 +183,7 @@ func main() {
 
 		modelName := os.Getenv("LLM_MODEL")
 		if modelName == "" {
-			modelName = "llama-3.1-8b-instant"
+			modelName = "llama-3.3-70b-versatile"
 		}
 
 		resp, err := client.R().
@@ -243,66 +243,62 @@ func main() {
 }
 
 func fetchContext(client *resty.Client, query string) ([]interface{}, error) {
-	qdrantURL := os.Getenv("QDRANT_URL")
-	if qdrantURL == "" {
-		qdrantURL = "http://localhost:6333"
-	}
-	qdrantKey := os.Getenv("QDRANT_API_KEY")
-	jinaKey := os.Getenv("JINA_API_KEY")
+    qdrantURL := os.Getenv("QDRANT_URL")
+    if qdrantURL == "" {
+        qdrantURL = "http://localhost:6333"
+    }
+    qdrantKey := os.Getenv("QDRANT_API_KEY")
+    jinaKey := os.Getenv("JINA_API_KEY")
 
-	// Fall back gracefully if Jina Key is missing
-	if jinaKey == "" {
-		log.Println("⚠️ JINA_API_KEY is missing! Skipping vector context retrieval.")
-		return nil, fmt.Errorf("JINA_API_KEY not configured")
-	}
+    if jinaKey == "" {
+        log.Println("⚠️ JINA_API_KEY missing! Skipping vector search.")
+        return nil, fmt.Errorf("JINA_API_KEY missing")
+    }
 
-	// 1. Fetch text embedding vector directly from Jina AI
-	var jinaRes map[string]interface{}
-	_, err := client.R().
-		SetHeader("Authorization", "Bearer "+jinaKey).
-		SetHeader("Content-Type", "application/json").
-		SetBody(map[string]interface{}{
-			"model": "jina-embeddings-v2-base-en",
-			"input": []string{query},
-		}).
-		SetResult(&jinaRes).
-		Post("https://api.jina.ai/v1/embeddings")
+    // 1. Get embedding from Jina AI
+    var jinaRes map[string]interface{}
+    _, err := client.R().
+        SetHeader("Authorization", "Bearer "+jinaKey).
+        SetHeader("Content-Type", "application/json").
+        SetBody(map[string]interface{}{
+            "model": "jina-embeddings-v2-base-en",
+            "input": []string{query},
+        }).
+        SetResult(&jinaRes).
+        Post("https://api.jina.ai/v1/embeddings")
 
-	if err != nil {
-		return nil, fmt.Errorf("Jina AI embedding API request failed: %v", err)
-	}
+    if err != nil {
+        return nil, fmt.Errorf("Jina AI request failed: %v", err)
+    }
 
-	// 2. Extract vector numbers from response payload
-	data, ok := jinaRes["data"].([]interface{})
-	if !ok || len(data) == 0 {
-		return nil, fmt.Errorf("No embedding vector array returned from Jina AI")
-	}
-	firstObj, ok := data[0].(map[string]interface{})
-	if !ok {
-		return nil, fmt.Errorf("Malformed Jina response element")
-	}
-	vector := firstObj["embedding"]
+    data, ok := jinaRes["data"].([]interface{})
+    if !ok || len(data) == 0 {
+        return nil, fmt.Errorf("No embedding returned from Jina")
+    }
+    firstObj, _ := data[0].(map[string]interface{})
+    vector := firstObj["embedding"]
 
-	// 3. Search Qdrant Cloud for matching document vectors
-	req := client.R().
-		SetBody(map[string]interface{}{
-			"search_params": map[string]interface{}{"hnsw_ef": 128},
-			"vector":        vector,
-			"limit":         5,
-			"with_payload":  true,
-		})
+    // 2. Query Qdrant Cloud
+    req := client.R().
+        SetBody(map[string]interface{}{
+            "search_params": map[string]interface{}{"hnsw_ef": 128},
+            "vector":        vector,
+            "limit":         5,
+            "with_payload":  true,
+        })
 
-	if qdrantKey != "" {
-		req.SetHeader("api-key", qdrantKey)
-	}
+    if qdrantKey != "" {
+        req.SetHeader("api-key", qdrantKey)
+    }
 
-	var qdrantResponse map[string]interface{}
-	_, err = req.SetResult(&qdrantResponse).
-		Post(fmt.Sprintf("%s/collections/hydra_docs/points/search", qdrantURL))
-	if err != nil {
-		return nil, fmt.Errorf("Qdrant database fetch failed: %v", err)
-	}
+    var qdrantResponse map[string]interface{}
+    _, err = req.SetResult(&qdrantResponse).
+        Post(fmt.Sprintf("%s/collections/hydra_docs/points/search", qdrantURL))
 
-	result, _ := qdrantResponse["result"].([]interface{})
-	return result, nil
+    if err != nil {
+        return nil, fmt.Errorf("Qdrant fetch failed: %v", err)
+    }
+
+    result, _ := qdrantResponse["result"].([]interface{})
+    return result, nil
 }
