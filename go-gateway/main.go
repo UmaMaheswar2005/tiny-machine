@@ -183,7 +183,7 @@ func main() {
 
 		modelName := os.Getenv("LLM_MODEL")
 		if modelName == "" {
-			modelName = "llama-3.3-70b-versatile"
+			modelName = "openai/gpt-oss-120b"
 		}
 
 		resp, err := client.R().
