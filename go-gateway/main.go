@@ -243,43 +243,55 @@ func main() {
 }
 
 func fetchContext(client *resty.Client, query string) ([]interface{}, error) {
-	inferenceURL := os.Getenv("INFERENCE_URL")
-	if inferenceURL == "" {
-		inferenceURL = "http://localhost:8000"
-	}
-
 	qdrantURL := os.Getenv("QDRANT_URL")
 	if qdrantURL == "" {
 		qdrantURL = "http://localhost:6333"
 	}
 	qdrantKey := os.Getenv("QDRANT_API_KEY")
+	jinaKey := os.Getenv("JINA_API_KEY")
 
-	// 1. Send query to inference service for embedding
-	var aiResponse map[string]interface{}
+	// Fall back gracefully if Jina Key is missing
+	if jinaKey == "" {
+		log.Println("⚠️ JINA_API_KEY is missing! Skipping vector context retrieval.")
+		return nil, fmt.Errorf("JINA_API_KEY not configured")
+	}
+
+	// 1. Fetch text embedding vector directly from Jina AI
+	var jinaRes map[string]interface{}
 	_, err := client.R().
-		SetBody(map[string]interface{}{"chunks": []string{query}}).
-		SetResult(&aiResponse).
-		Post(fmt.Sprintf("%s/embed", inferenceURL))
+		SetHeader("Authorization", "Bearer "+jinaKey).
+		SetHeader("Content-Type", "application/json").
+		SetBody(map[string]interface{}{
+			"model": "jina-embeddings-v2-base-en",
+			"input": []string{query},
+		}).
+		SetResult(&jinaRes).
+		Post("https://api.jina.ai/v1/embeddings")
+
 	if err != nil {
-		return nil, fmt.Errorf("AI embedding failed: %v", err)
+		return nil, fmt.Errorf("Jina AI embedding API request failed: %v", err)
 	}
 
-	vectors, _ := aiResponse["vectors"].([]interface{})
-	if len(vectors) == 0 {
-		return nil, fmt.Errorf("No vectors returned from inference service")
+	// 2. Extract vector numbers from response payload
+	data, ok := jinaRes["data"].([]interface{})
+	if !ok || len(data) == 0 {
+		return nil, fmt.Errorf("No embedding vector array returned from Jina AI")
 	}
+	firstObj, ok := data[0].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("Malformed Jina response element")
+	}
+	vector := firstObj["embedding"]
 
-	// 2. Query Qdrant vector database
+	// 3. Search Qdrant Cloud for matching document vectors
 	req := client.R().
 		SetBody(map[string]interface{}{
 			"search_params": map[string]interface{}{"hnsw_ef": 128},
-			"vector":        vectors[0],
+			"vector":        vector,
 			"limit":         5,
 			"with_payload":  true,
-			// 5. FIX: Removed hardcoded YOLO/LSTM keyword filter so search works across ALL context documents
 		})
 
-	// 6. FIX: Attach Qdrant API key header if present (required for Qdrant Cloud)
 	if qdrantKey != "" {
 		req.SetHeader("api-key", qdrantKey)
 	}
@@ -288,7 +300,7 @@ func fetchContext(client *resty.Client, query string) ([]interface{}, error) {
 	_, err = req.SetResult(&qdrantResponse).
 		Post(fmt.Sprintf("%s/collections/hydra_docs/points/search", qdrantURL))
 	if err != nil {
-		return nil, fmt.Errorf("Database fetch failed: %v", err)
+		return nil, fmt.Errorf("Qdrant database fetch failed: %v", err)
 	}
 
 	result, _ := qdrantResponse["result"].([]interface{})
