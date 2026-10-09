@@ -64,6 +64,9 @@
     </div>
 
     <script>
+        // 1. DEFINE YOUR RENDER URL HERE
+        const API_BASE = "https://hydra-backend-di80.onrender.com"; 
+
         // Generate an initial session ID
         let currentSessionId = crypto.randomUUID();
 
@@ -73,7 +76,8 @@
         // Fetch the list of all session IDs from the Go backend
         async function loadSessionList() {
             try {
-                const response = await fetch('/sessions');
+                // 2. UPDATED FETCH URL
+                const response = await fetch(`${API_BASE}/sessions`);
                 const data = await response.json();
                 
                 const list = document.getElementById('session-list');
@@ -117,7 +121,8 @@
             if (activeTab) activeTab.classList.add('active');
 
             try {
-                const response = await fetch(`/sessions/${sessionId}`);
+                // 3. UPDATED FETCH URL
+                const response = await fetch(`${API_BASE}/sessions/${sessionId}`);
                 const data = await response.json();
                 
                 if (data.messages) {
@@ -149,7 +154,8 @@
             typing.style.display = 'block';
 
             try {
-                const response = await fetch('/ask', {
+                // 4. UPDATED FETCH URL
+                const response = await fetch(`${API_BASE}/ask`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ 
